@@ -1,0 +1,5 @@
+# 이 파일에 명시된 라이브러리들은 아래 명령어로 한 번에 설치할 수 있습니다.
+# pip install -r requirements.txt
+
+pymodbus==3.6.8
+schedule==1.2.1

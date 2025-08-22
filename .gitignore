@@ -1,0 +1,60 @@
+# ==================================
+# Python
+# ==================================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Installer logs
+*.log
+
+# ==================================
+# Virtual Environments
+# ==================================
+venv/
+env/
+ENV/
+.venv/
+.env
+
+# ==================================
+# Development Tools
+# ==================================
+# Pytest cache
+.pytest_cache/
+
+# Mypy cache
+.mypy_cache/
+
+# Coverage data
+.coverage
+htmlcov/
+
+# ==================================
+# IDE / Editor Files
+# ==================================
+# Visual Studio Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ==================================
+# OS-specific files
+# ==================================
+.DS_Store
+Thumbs.db
+._*
+
+# ==================================
+# Project-Specific
+# ==================================
+# 이 프로젝트에서 생성되는 로그 폴더
+/modbus_logs/
