@@ -28,12 +28,14 @@ class ModbusDataLogger:
         
     def _get_log_filenames(self, ip_address, log_date):
         date_str = log_date.strftime("%Y%m%d")
-        time_str = self.current_time.strftime("%H%M%S")
         safe_ip = ip_address.replace('.', '_')
-        base_filename = f"{date_str}_{time_str}_{safe_ip}"
+        ip_log_path = os.path.join(self.log_path, safe_ip)
+        os.makedirs(ip_log_path, exist_ok=True)
 
-        input_file = os.path.join(self.log_path, f"{base_filename}_Input.csv")
-        holding_file = os.path.join(self.log_path, f"{base_filename}_Holding.csv")
+        base_filename = f"{date_str}"
+
+        input_file = os.path.join(ip_log_path, f"{base_filename}_Input.csv")
+        holding_file = os.path.join(ip_log_path, f"{base_filename}_Holding.csv")
         
         return input_file, holding_file
 
@@ -99,10 +101,6 @@ class ModbusDataLogger:
                 client.close()
 
     def log_data_task(self):
-        """
-        스케줄러에 의해 주기적으로 호출되는 메인 로깅 작업.
-        모든 IP에 대한 로깅 작업을 스레드 풀에 제출하여 동시에 실행시킵니다.
-        """
         if date.today() != self.current_date:
             logging.info("날짜가 변경되었습니다. 일일 압축 작업을 시작합니다.")
             self.daily_maintenance()
@@ -126,21 +124,26 @@ class ModbusDataLogger:
         self.close_all_files()
         yesterday = date.today() - timedelta(days=1)
         yesterday_str = yesterday.strftime("%Y%m%d")
-        log_files_to_zip = glob.glob(os.path.join(self.log_path, f"{yesterday_str}_*.csv"))
-        if log_files_to_zip:
-            zip_filename = os.path.join(self.log_path, f"{yesterday_str}_logs.zip")
-            logging.info(f"'{os.path.basename(zip_filename)}' 파일로 압축을 시작합니다.")
-            try:
-                with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for file in log_files_to_zip: zf.write(file, os.path.basename(file))
-                for file in log_files_to_zip: os.remove(file)
-                logging.info("압축 완료 후 원본 CSV 파일들을 삭제했습니다.")
-            except Exception as e:
-                logging.error(f"파일 압축 또는 삭제 중 오류 발생: {e}")
+        
+        for ip_address in self.config["ip_addresses"]:
+            safe_ip = ip_address.replace('.', '_')
+            ip_log_path = os.path.join(self.log_path, safe_ip)
+            log_files_to_zip = glob.glob(os.path.join(ip_log_path, f"{yesterday_str}_*.csv"))
+
+            if log_files_to_zip:
+                zip_filename = os.path.join(self.log_path, f"{yesterday_str}_{safe_ip}_logs.zip")
+                logging.info(f"'{os.path.basename(zip_filename)}' 파일로 압축을 시작합니다.")
+                try:
+                    with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for file in log_files_to_zip: zf.write(file, os.path.basename(file))
+                    for file in log_files_to_zip: os.remove(file)
+                    logging.info(f"압축 완료 후 원본 CSV 파일들을 [{safe_ip}]에서 삭제했습니다.")
+                except Exception as e:
+                    logging.error(f"파일 압축 또는 삭제 중 오류 발생: {e}")
         self.cleanup_old_files()
 
     def cleanup_old_files(self):
-        max_zips = self.config.get("max_zip_archives", 15)
+        max_zips = self.config.get("max_zip_archives", 365)
         zip_files = glob.glob(os.path.join(self.log_path, "*.zip"))
         if len(zip_files) > max_zips:
             zip_files.sort(key=os.path.getmtime)
@@ -155,7 +158,6 @@ class ModbusDataLogger:
                     logging.error(f"'{file_to_delete}' 파일 삭제 중 오류 발생: {e}")
 
     def start(self):
-        """로거를 시작하고 스케줄러를 무한 루프로 실행합니다."""
         logging.info("=" * 50)
         logging.info("Modbus 데이터 로거를 시작합니다. (모드: 스레드 풀 동시 처리)")
         logging.info(f"로깅 주기: {self.config['log_interval_seconds']}초")
