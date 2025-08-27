@@ -57,7 +57,7 @@ class ModbusDataLogger:
                 in_handler, in_writer = self._prepare_log_file(input_file, in_reg["start_address"], in_reg["count"])
                 hold_handler, hold_writer = self._prepare_log_file(holding_file, hold_reg["start_address"], hold_reg["count"])
                 self.file_handlers[ip_address] = {"input": (in_handler, in_writer), "holding": (hold_handler, hold_writer)}
-                logging.info(f"[{ip_address}] {self.current_date.strftime('%Y-%m-%d')} 날짜의 로깅 시작 {self.current_time.strftime('%H 시 %M 분 %S 초')} 완료.")
+                logging.info(f"[{ip_address}] {self.current_date.strftime('%Y-%m-%d')} 날짜의 로깅 시작 완료.")
         return self.file_handlers[ip_address]
 
     def _log_single_ip(self, ip, timestamp):
@@ -131,8 +131,8 @@ class ModbusDataLogger:
             log_files_to_zip = glob.glob(os.path.join(ip_log_path, f"{yesterday_str}_*.csv"))
 
             if log_files_to_zip:
-                zip_filename = os.path.join(self.log_path, f"{yesterday_str}_{safe_ip}_logs.zip")
-                logging.info(f"'{os.path.basename(zip_filename)}' 파일로 압축을 시작합니다.")
+                zip_filename = os.path.join(ip_log_path, f"{yesterday_str}_logs.zip")
+                logging.info(f"'{os.path.basename(zip_filename)}' 파일로 압축을 시작합니다. (경로: {ip_log_path})")
                 try:
                     with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zf:
                         for file in log_files_to_zip: zf.write(file, os.path.basename(file))
@@ -144,18 +144,22 @@ class ModbusDataLogger:
 
     def cleanup_old_files(self):
         max_zips = self.config.get("max_zip_archives", 365)
-        zip_files = glob.glob(os.path.join(self.log_path, "*.zip"))
-        if len(zip_files) > max_zips:
-            zip_files.sort(key=os.path.getmtime)
-            num_to_delete = len(zip_files) - max_zips
-            logging.info(f"최대 압축 파일 개수({max_zips}개)를 초과하여 가장 오래된 압축 파일 {num_to_delete}개를 삭제합니다.")
-            for i in range(num_to_delete):
-                try:
-                    file_to_delete = zip_files[i]
-                    logging.info(f"삭제 대상: {os.path.basename(file_to_delete)}")
-                    os.remove(file_to_delete)
-                except Exception as e:
-                    logging.error(f"'{file_to_delete}' 파일 삭제 중 오류 발생: {e}")
+        for ip_address in self.config["ip_addresses"]:
+            safe_ip = ip_address.replace('.', '_')
+            ip_log_path = os.path.join(self.log_path, safe_ip)
+            
+            zip_files = glob.glob(os.path.join(ip_log_path, "*.zip"))
+            if len(zip_files) > max_zips:
+                zip_files.sort(key=os.path.getmtime)
+                num_to_delete = len(zip_files) - max_zips
+                logging.info(f"[{safe_ip}] 최대 압축 파일 개수({max_zips}개)를 초과하여 가장 오래된 압축 파일 {num_to_delete}개를 삭제합니다.")
+                for i in range(num_to_delete):
+                    try:
+                        file_to_delete = zip_files[i]
+                        logging.info(f"삭제 대상: {os.path.basename(file_to_delete)}")
+                        os.remove(file_to_delete)
+                    except Exception as e:
+                        logging.error(f"'{file_to_delete}' 파일 삭제 중 오류 발생: {e}")
 
     def start(self):
         logging.info("=" * 50)
