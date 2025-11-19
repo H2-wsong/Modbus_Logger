@@ -19,6 +19,9 @@ class ModbusDataLogger:
         self.current_date = date.today()
         self.current_time = datetime.now()
 
+        # IP와 포트 정보를 딕셔너리로 변환하여 저장: {"192.168.200.31": 502, ...}
+        self.ip_port_map = {ip: port for ip, port in self.config["ip_addresses_with_port"]}
+
         self.file_handlers = {}
         self.file_handler_lock = threading.Lock()
 
@@ -61,12 +64,19 @@ class ModbusDataLogger:
         return self.file_handlers[ip_address]
 
     def _log_single_ip(self, ip, timestamp):
+        # IP에 해당하는 포트 번호를 가져옵니다.
+        port = self.ip_port_map.get(ip)
+        if port is None:
+             logging.error(f"[{ip}] 구성 파일에서 포트 번호를 찾을 수 없습니다. 로깅 건너뛰기.")
+             return
+
         client = None
         try:
-            client = ModbusTcpClient(ip, port=self.config["port"], timeout=3)
+            # ModbusTcpClient 객체를 생성할 때 포트 번호를 사용합니다.
+            client = ModbusTcpClient(ip, port=port, timeout=3)
             
             if not client.connect():
-                logging.warning(f"[{ip}] Modbus 서버에 연결할 수 없습니다. (로그 파일 생성 안 함)")
+                logging.warning(f"[{ip}:{port}] Modbus 서버에 연결할 수 없습니다. (로그 파일 생성 안 함)")
                 return
 
             handlers = self._get_or_create_file_handlers(ip)
@@ -82,7 +92,7 @@ class ModbusDataLogger:
                 handlers["input"][1].writerow([timestamp] + rr_in.registers)
                 handlers["input"][0].flush()
             else:
-                logging.warning(f"[{ip}] Input Register 읽기 실패: {rr_in}")
+                logging.warning(f"[{ip}:{port}] Input Register 읽기 실패: {rr_in}")
 
             rr_hold = client.read_holding_registers(
                 address=hold_reg_info["start_address"], 
@@ -92,10 +102,10 @@ class ModbusDataLogger:
                 handlers["holding"][1].writerow([timestamp] + rr_hold.registers)
                 handlers["holding"][0].flush()
             else:
-                logging.warning(f"[{ip}] Holding Register 읽기 실패: {rr_hold}")
+                logging.warning(f"[{ip}:{port}] Holding Register 읽기 실패: {rr_hold}")
 
         except Exception as e:
-            logging.error(f"[{ip}] 로깅 작업 중 예기치 않은 오류 발생: {e}")
+            logging.error(f"[{ip}:{port}] 로깅 작업 중 예기치 않은 오류 발생: {e}")
         finally:
             if client:
                 client.close()
@@ -108,7 +118,8 @@ class ModbusDataLogger:
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         
-        for ip in self.config["ip_addresses"]:
+        # ip_port_map의 키(IP 주소)를 순회하며 로깅 작업을 제출합니다.
+        for ip in self.ip_port_map.keys():
             self.executor.submit(self._log_single_ip, ip, timestamp)
 
     def close_all_files(self):
@@ -125,7 +136,8 @@ class ModbusDataLogger:
         yesterday = date.today() - timedelta(days=1)
         yesterday_str = yesterday.strftime("%Y%m%d")
         
-        for ip_address in self.config["ip_addresses"]:
+        # ip_port_map의 키(IP 주소)를 순회하며 압축 작업을 수행합니다.
+        for ip_address in self.ip_port_map.keys():
             safe_ip = ip_address.replace('.', '_')
             ip_log_path = os.path.join(self.log_path, safe_ip)
             log_files_to_zip = glob.glob(os.path.join(ip_log_path, f"{yesterday_str}_*.csv"))
@@ -144,7 +156,8 @@ class ModbusDataLogger:
 
     def cleanup_old_files(self):
         max_zips = self.config.get("max_zip_archives", 365)
-        for ip_address in self.config["ip_addresses"]:
+        # ip_port_map의 키(IP 주소)를 순회하며 오래된 압축 파일을 정리합니다.
+        for ip_address in self.ip_port_map.keys():
             safe_ip = ip_address.replace('.', '_')
             ip_log_path = os.path.join(self.log_path, safe_ip)
             
