@@ -19,9 +19,10 @@ class ModbusDataLogger:
         self.current_date = date.today()
         self.current_time = datetime.now()
 
-        # IP와 포트 정보를 딕셔너리로 변환하여 저장: {"192.168.200.31": 502, ...}
-        self.ip_port_map = {ip: port for ip, port in self.config["ip_addresses_with_port"]}
+        # IP와 Port 목록을 그대로 가져옵니다. (동일 IP, 다른 Port 지원을 위해 딕셔너리 대신 리스트 사용)
+        self.targets = self.config["ip_addresses_with_port"]
 
+        # 파일 핸들러 키를 (IP, Port) 튜플로 관리
         self.file_handlers = {}
         self.file_handler_lock = threading.Lock()
 
@@ -29,16 +30,19 @@ class ModbusDataLogger:
         self.executor = ThreadPoolExecutor(max_workers=max_threads)
         logging.info(f"최대 동시 작업 스레드를 {max_threads}개로 설정합니다.")
         
-    def _get_log_filenames(self, ip_address, log_date):
+    def _get_log_filenames(self, ip_address, port, log_date):
         date_str = log_date.strftime("%Y%m%d")
+        # 폴더명을 IP_Port 형식으로 생성 (예: 192_168_0_1_502)
         safe_ip = ip_address.replace('.', '_')
-        ip_log_path = os.path.join(self.log_path, safe_ip)
-        os.makedirs(ip_log_path, exist_ok=True)
+        folder_name = f"{safe_ip}_{port}"
+        
+        target_log_path = os.path.join(self.log_path, folder_name)
+        os.makedirs(target_log_path, exist_ok=True)
 
         base_filename = f"{date_str}"
 
-        input_file = os.path.join(ip_log_path, f"{base_filename}_Input.csv")
-        holding_file = os.path.join(ip_log_path, f"{base_filename}_Holding.csv")
+        input_file = os.path.join(target_log_path, f"{base_filename}_Input.csv")
+        holding_file = os.path.join(target_log_path, f"{base_filename}_Holding.csv")
         
         return input_file, holding_file
 
@@ -52,34 +56,35 @@ class ModbusDataLogger:
             handler.flush()
         return handler, writer
 
-    def _get_or_create_file_handlers(self, ip_address):
+    def _get_or_create_file_handlers(self, ip_address, port):
+        # 식별자를 IP와 Port의 튜플로 설정
+        handler_key = (ip_address, port)
+        
         with self.file_handler_lock:
-            if ip_address not in self.file_handlers:
-                input_file, holding_file = self._get_log_filenames(ip_address, self.current_date)
+            if handler_key not in self.file_handlers:
+                input_file, holding_file = self._get_log_filenames(ip_address, port, self.current_date)
                 in_reg, hold_reg = self.config["input_register"], self.config["holding_register"]
                 in_handler, in_writer = self._prepare_log_file(input_file, in_reg["start_address"], in_reg["count"])
                 hold_handler, hold_writer = self._prepare_log_file(holding_file, hold_reg["start_address"], hold_reg["count"])
-                self.file_handlers[ip_address] = {"input": (in_handler, in_writer), "holding": (hold_handler, hold_writer)}
-                logging.info(f"[{ip_address}] {self.current_date.strftime('%Y-%m-%d')} 날짜의 로깅 시작 완료.")
-        return self.file_handlers[ip_address]
+                
+                self.file_handlers[handler_key] = {
+                    "input": (in_handler, in_writer), 
+                    "holding": (hold_handler, hold_writer)
+                }
+                logging.info(f"[{ip_address}:{port}] {self.current_date.strftime('%Y-%m-%d')} 날짜의 로깅 시작 완료.")
+        return self.file_handlers[handler_key]
 
-    def _log_single_ip(self, ip, timestamp):
-        # IP에 해당하는 포트 번호를 가져옵니다.
-        port = self.ip_port_map.get(ip)
-        if port is None:
-             logging.error(f"[{ip}] 구성 파일에서 포트 번호를 찾을 수 없습니다. 로깅 건너뛰기.")
-             return
-
+    def _log_single_ip(self, ip, port, timestamp):
         client = None
         try:
-            # ModbusTcpClient 객체를 생성할 때 포트 번호를 사용합니다.
+            # ModbusTcpClient 객체를 생성
             client = ModbusTcpClient(ip, port=port, timeout=3)
             
             if not client.connect():
                 logging.warning(f"[{ip}:{port}] Modbus 서버에 연결할 수 없습니다. (로그 파일 생성 안 함)")
                 return
 
-            handlers = self._get_or_create_file_handlers(ip)
+            handlers = self._get_or_create_file_handlers(ip, port)
 
             in_reg_info = self.config["input_register"]
             hold_reg_info = self.config["holding_register"]
@@ -118,9 +123,9 @@ class ModbusDataLogger:
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         
-        # ip_port_map의 키(IP 주소)를 순회하며 로깅 작업을 제출합니다.
-        for ip in self.ip_port_map.keys():
-            self.executor.submit(self._log_single_ip, ip, timestamp)
+        # targets 리스트(튜플 목록)를 순회하며 작업 제출
+        for ip, port in self.targets:
+            self.executor.submit(self._log_single_ip, ip, port, timestamp)
 
     def close_all_files(self):
         if not self.file_handlers: return
@@ -136,36 +141,46 @@ class ModbusDataLogger:
         yesterday = date.today() - timedelta(days=1)
         yesterday_str = yesterday.strftime("%Y%m%d")
         
-        # ip_port_map의 키(IP 주소)를 순회하며 압축 작업을 수행합니다.
-        for ip_address in self.ip_port_map.keys():
+        # targets 리스트를 순회하며 폴더별 압축 수행
+        for ip_address, port in self.targets:
             safe_ip = ip_address.replace('.', '_')
-            ip_log_path = os.path.join(self.log_path, safe_ip)
-            log_files_to_zip = glob.glob(os.path.join(ip_log_path, f"{yesterday_str}_*.csv"))
+            folder_name = f"{safe_ip}_{port}"
+            target_log_path = os.path.join(self.log_path, folder_name)
+            
+            # 해당 폴더가 없으면 건너뜀
+            if not os.path.exists(target_log_path):
+                continue
+
+            log_files_to_zip = glob.glob(os.path.join(target_log_path, f"{yesterday_str}_*.csv"))
 
             if log_files_to_zip:
-                zip_filename = os.path.join(ip_log_path, f"{yesterday_str}_logs.zip")
-                logging.info(f"'{os.path.basename(zip_filename)}' 파일로 압축을 시작합니다. (경로: {ip_log_path})")
+                zip_filename = os.path.join(target_log_path, f"{yesterday_str}_logs.zip")
+                logging.info(f"'{os.path.basename(zip_filename)}' 파일로 압축을 시작합니다. (경로: {target_log_path})")
                 try:
                     with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zf:
                         for file in log_files_to_zip: zf.write(file, os.path.basename(file))
                     for file in log_files_to_zip: os.remove(file)
-                    logging.info(f"압축 완료 후 원본 CSV 파일들을 [{safe_ip}]에서 삭제했습니다.")
+                    logging.info(f"압축 완료 후 원본 CSV 파일들을 [{folder_name}]에서 삭제했습니다.")
                 except Exception as e:
                     logging.error(f"파일 압축 또는 삭제 중 오류 발생: {e}")
         self.cleanup_old_files()
 
     def cleanup_old_files(self):
         max_zips = self.config.get("max_zip_archives", 365)
-        # ip_port_map의 키(IP 주소)를 순회하며 오래된 압축 파일을 정리합니다.
-        for ip_address in self.ip_port_map.keys():
+        
+        for ip_address, port in self.targets:
             safe_ip = ip_address.replace('.', '_')
-            ip_log_path = os.path.join(self.log_path, safe_ip)
+            folder_name = f"{safe_ip}_{port}"
+            target_log_path = os.path.join(self.log_path, folder_name)
             
-            zip_files = glob.glob(os.path.join(ip_log_path, "*.zip"))
+            if not os.path.exists(target_log_path):
+                continue
+            
+            zip_files = glob.glob(os.path.join(target_log_path, "*.zip"))
             if len(zip_files) > max_zips:
                 zip_files.sort(key=os.path.getmtime)
                 num_to_delete = len(zip_files) - max_zips
-                logging.info(f"[{safe_ip}] 최대 압축 파일 개수({max_zips}개)를 초과하여 가장 오래된 압축 파일 {num_to_delete}개를 삭제합니다.")
+                logging.info(f"[{folder_name}] 최대 압축 파일 개수({max_zips}개)를 초과하여 가장 오래된 압축 파일 {num_to_delete}개를 삭제합니다.")
                 for i in range(num_to_delete):
                     try:
                         file_to_delete = zip_files[i]
